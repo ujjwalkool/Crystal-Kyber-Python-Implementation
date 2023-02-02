@@ -1,0 +1,160 @@
+Q = KYBER_Q  (3329)
+N = KYBER_N  (256)
+[] denotes rounding
+
+reduce.c
+
+	montgomery_reduce
+		I - 32-bit int(a)
+		O - 16-bit int(x)
+		Calculates x which is equivalent to (a*(2^-16))%Q.
+		Works by calculating t such that t%(2^16)==a%(2^16) and t is a multiple of Q. Now replace a by a-t in the equation.
+		q=3329 a=100000 -> -1333
+		
+	barrett_reduce
+		I - 16-bit int(a)
+		O - 16-bit int(x)
+		Calculates a%q efficiently.
+		Works by approximating 1/Q as v/2^26 and using in the equation a = x + [a/Q]*Q. Here a/Q is truncated.
+		q=3329 a=10000 -> 13
+		
+	csubq
+		I - 16-bit int(a)
+		O - 16-bit int(x)
+		x = a-q if a>=q, else x = a
+		Subtract q from a and if the result becomes negative q is added back
+		q=3329 a=5000 -> 1671 
+	
+	
+poly.c
+	reduce.c
+	
+	poly -> array representing coefficients of polynomial in polynomial ring. Each coefficient is a 16-bit integer.
+	
+	poly_csubq
+		I - poly
+		Applies csubq to every coefficient of the polynomial.
+		q=13 poly=10+20x+5x^2+14x^3 -> 10+7x+5x^2+x^3
+		
+    poly_reduce
+    	I - poly
+		Applies barrett_reduce to every coefficient of the polynomial
+		q=13 poly=100+20x+55x^2+142x^3 -> 9+7x+3x^2+12x^3
+
+	poly_tobytes
+		I - poly a
+		O - Byte array r
+		Serialise the polynomial into a byte array.
+		First applies poly_csubq to a. Then convert 2 consecutive coefficients into 3 bytes. The first 4 upper bits of each coefficient are 0. The number of bits to store is 2*(16-4) = 24, which can fit in 3 bytes.
+		a1a0 is equivalent to r2r1r0.
+		q=29 a=41+21x+30x^2+17x^3 -> [12,80,1,1,16,1]
+		
+	poly_frombytes
+		I - byte array r
+		O - poly a
+		Deserialise the byte array into a polynomial.
+		Converts the consecutive 3 bytes of the byte array into 2 consecutive coefficients of the polynomial setting the first 4 upper bits of each coefficient to 0. r2r1r0 is equivalent to a1a0.
+		[7,20,45,95,157,241] -> 1031+721x+3423x^2+3865x^3
+
+	poly_frommsg
+		I - Byte array (msg)
+		O - poly r
+		**Number of bytes in the message should be equal to N/8
+		Convert a message in bytes into a polynomial.
+		From each bit of the message we get 1 coefficient of the polynomial. If the bit is 0, the coefficient is set to 0 otherwise the coefficient is set to (Q+1)/2.
+		q=13 [101] -> 7+7x^2+7x^5+7x^6 
+		
+	poly_tomsg
+		I - poly r
+		O - Byte array (msg)
+		Convert a polynomial to message in bytes.
+		First applies poly_csubq to r. Then, from each coefficient of the polynomial we get 1 bit of the message. If the coefficient is closer to (q+1)/2 than 0 or q, then the bit is sent to 1 else the bit is set to 0. 
+		41+21x+30x^2+17x^3+10x^4+20x^5+5x^6+14x^7 -> [187]
+		
+	poly_compress
+		I - poly r
+		O - Byte array
+		Compress and serialise the polynomial into bytes.
+		First applies poly_csubq to r. Then two consecutive coefficients are converted into one byte. Each coefficient takes 4 bits space which is equal to the [(coefficient*2^4)/q)]. 
+		q=13 r=10+20x+5x^2+14x^3 -> [156,22] 
+		
+	poly_decompress
+		I - byte array a
+		O - poly r
+		Deserialise and decompress the byte array into polynomial.
+		It iterates through compressed bytes vector and converts each byte into two coefficients. This is done by first splitting the byte into two components of 4 bits each, then each coefficient is calculated as [(4_bit_component*q)/2^4]. Higher bits give higher coefficient.
+		q=3329 [81,69] -> 2+9x+9x^2+7x^3
+
+	poly_add
+		I - poly a, poly b
+		O - poly r
+		Adds two polynomials.
+		Sets the coefficient of r equal to sum of coefficient of a and coefficient of b.
+		a = 4+x+17x^2+12x^3  b = 33+71x+7x^2+x^3 -> r = 37+72x+24x^2+13x^3
+
+	poly_sub
+		I - poly a, poly b
+		O - poly r
+		Subtracts two polynomials.
+		Sets the coefficient of r equal to difference of coefficient of a and coefficient of b.
+		a = 40+x+17x^2+12x^3  b = 33+71x+7x^2+x^3 -> r = 7-70x+10x^2+11x^3
+
+	poly_tomont
+		I - poly a
+		Converts coefficient of the polynomial from normal to montgomery domain(a is represented by (a*R)%M).
+		Calculates montgomery_reduce of (coefficient*((2^32)%q)) which is equivalent to (coefficient*2^16)%q.
+		q=13 a=13+23x+6x^2+17x^3 -> 6-5x+5x^2+10x^3
+
+	poly_ntt
+		I - poly r 
+		Converts the polynomial into ntt domain and then reduce all coefficients in Zq.
+		P = 2+5x^3 mod x^4+1 and q = 17  ->  2+3x mod x^2-4 and 2+14x mod x^2-4
+
+	poly_invntt_tomont
+		I - poly r (ntt domain) 
+		Converts the polynomial from ntt domain to normal(time) domain.
+
+	poly_basemul_montgomery
+	    I - poly a, poly b (ntt domain) 
+		O - poly r (ntt domain)
+		Multiplies two polynomial in ntt domain in Zq[X]/(X^256+1).
+		Performs the pointwise multiplication of two polynomials in ntt domain.
+		(a[2*i] + a[2*i+1]x) * (b[2*i] + b[2*i+1]x) in Zq[X]/(X^2 + zeta[i]) -> r[2*i] + r[2*i+1]x
+		
+
+ntt.c
+	reduce.c
+	All values are in montgomery domain (a -> aR) with R = 2^16
+
+	fqmul
+		I - 16-bit int(a), 16-bit int(b)
+		O - 16-bit int(c)
+		Multiplies two numbers in montgomery domain.
+		This is done by simply multiplying the two numbers and then applying montgomery_reduce to the result.
+		For a = xR and b = yR, xyR(product) = (xR)*(yR)*(R^-1) = a*b*(R^-1) reduced in Zq.		
+		a=100 b=699 -> c=-1521
+
+	basemul
+		I - poly a, poly b, int zeta
+		O - poly r
+		Multiplies 2 polynomials in Zq[X]/(X^2-zeta).
+		This is done by multiplying the two polynomials and then replacing X^2 by zeta.
+        (a[0] + a[1]x) * (b[0] + b[1]x) -> (a[0]b[0] + a[1]b[1]zeta) + (a[1]b[0] + a[0]b[1])x
+		a = 5 + 3x b = 7 + x -> r = -898 + 1065x
+
+	ntt
+	    I - poly a
+		Inplace conversion of a polynomial to ntt domain.
+		The goal is to split the polynomial into smaller polynomials which can be multiplied quickly. For a poly P in Zq[X]/(X^256+1), we find a zeta such that (X^128 + zeta)*(X^128 - zeta) is congruent to (X^256 + 1). Now the polynomial P can be split as P mod (X^128-zeta) and P mod (X^128+zeta). The size of the reduced polynomial is half the size of original polynomial. The polynomials can be split further until their degree becomes one. Degree-1 polynomials can be multiplied quickly. In the reduction step, we replace X^128 with zeta and -zeta respectively. The zetas for all the splitting can be precomputed and stored in an array for efficient use. The conversion is inplace such that the polunomials P is split into, occupy the half of space of P each.
+		P = 2+5x^3 mod x^4+1 and q = 17  ->  2+20x mod x^2-4 and 2-20x mod x^2-4 
+		
+
+    invntt
+		I - poly a (ntt domain)
+		Inplace conversion of a polynomial from ntt domain to normal domain.
+		Using CRT (Chinease Remainder Theorem), smaller polynomials can be combined into larger ones. Also, the solution of CRT is unique which makes sure it matches with the original polynomial in normal domian. For combining the polynomials, the step where X^r is replaced with zeta needs to be reversed. This can be done efficiently solving two linear equations. The coefficient of the combined polynomial contains zeta inverse multiplied with it. The inverse of zetas can be precomputed and stored in an array for efficient use.
+
+        
+	
+
+
